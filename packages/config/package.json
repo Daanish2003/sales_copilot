@@ -1,5 +1,8 @@
 {
 	"name": "@sales_copilot/config",
 	"version": "0.0.0",
-	"private": true
+	"private": true,
+	"export": {
+		".": "./tsconfig.base.json"
+	}
 }
