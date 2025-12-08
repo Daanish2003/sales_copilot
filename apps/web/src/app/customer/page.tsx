@@ -1,3 +1,4 @@
+"use client"
 import { LanguageProvider, useLanguage } from "@/hooks/use-language"
 import CustomerCallInterface from "@/components/customer-call-interface"
 import { CallProvider, useCallContext } from "@/hooks/use-call-context"
@@ -8,15 +9,11 @@ function CustomerContent() {
   const { t } = useLanguage()
   const { callDuration, isConnected, callId } = useCallContext()
   const router = useRouter()
-  const [showNoCallIdWarning, setShowNoCallIdWarning] = useState(false)
+  const [isReady, setIsReady] = useState(true)
 
   useEffect(() => {
-    if (!callId) {
-      setShowNoCallIdWarning(true)
-      const timer = setTimeout(() => router.push("/"), 3000)
-      return () => clearTimeout(timer)
-    }
-  }, [callId, router])
+    setIsReady(true)
+  }, [])
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -24,20 +21,13 @@ function CustomerContent() {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
 
-  if (showNoCallIdWarning) {
-    return (
-      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-white mb-4">No Call ID Found</h2>
-          <p className="text-slate-400 mb-4">Redirecting to home page...</p>
-        </div>
-      </main>
-    )
+  if (!isReady) {
+    return null
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <main className="min-h-screen bg-background flex items-center justify-center p-3 sm:p-4 md:p-6">
+      <div className="w-full max-w-sm sm:max-w-md">
         <CustomerCallInterface
           isCallActive={isConnected}
           callDuration={formatTime(callDuration)}

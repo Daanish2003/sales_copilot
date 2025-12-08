@@ -2,29 +2,24 @@
 
 import { Mic2, Phone, Settings, Home, Copy, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { useLanguage } from "@/hooks/use-language"
 import LanguageSwitcher from "./language-switcher"
 import Link from "next/link"
 
 interface CallHeaderProps {
   callId?: string
+  callDuration?: string
+  isActive?: boolean          // 👈 add this
 }
 
-export default function CallHeader({ callId }: CallHeaderProps) {
-  const [callDuration, setCallDuration] = useState("00:00")
+export default function CallHeader({
+  callId,
+  callDuration = "00:00",
+  isActive = true,            // 👈 safe default
+}: CallHeaderProps) {
   const [copied, setCopied] = useState(false)
   const { t } = useLanguage()
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = new Date()
-      const mins = now.getMinutes()
-      const secs = now.getSeconds()
-      setCallDuration(`${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`)
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [])
 
   const handleCopyCallId = () => {
     if (callId) {
@@ -35,53 +30,77 @@ export default function CallHeader({ callId }: CallHeaderProps) {
   }
 
   return (
-    <header className="border-b border-border bg-card px-6 py-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
-            <Mic2 className="h-5 w-5 text-primary-foreground" />
+    <header className="border-b border-border bg-card px-3 sm:px-4 md:px-6 py-3 sm:py-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
+        {/* Logo and Title */}
+        <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
+          <div className="flex h-8 sm:h-10 w-8 sm:w-10 items-center justify-center rounded-lg bg-primary flex-shrink-0">
+            <Mic2 className="h-4 sm:h-5 w-4 sm:w-5 text-primary-foreground" />
           </div>
-          <div>
-            <h1 className="text-xl font-bold text-foreground">{t("header.title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("header.subtitle")}</p>
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-bold text-foreground truncate">
+              {t("header.title")}
+            </h1>
+            <p className="text-xs sm:text-sm text-muted-foreground truncate">
+              {t("header.subtitle")}
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        {/* Duration and Call ID */}
+        <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto flex-wrap">
+          {/* Call Duration */}
           <div className="text-right">
-            <p className="text-2xl font-mono font-bold text-foreground">{callDuration}</p>
-            <p className="text-xs text-muted-foreground">{t("callDuration")}</p>
+            <p className="text-lg sm:text-2xl font-mono font-bold text-foreground">
+              {callDuration}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t("callDuration")}
+            </p>
+            {/* Optional: show status using isActive */}
+            {/* <p className="text-[10px] text-muted-foreground">
+              {isActive ? t("callStatus.active") : t("callStatus.ended")}
+            </p> */}
           </div>
 
+          {/* Call ID */}
           {callId && (
-            <div className="px-3 py-2 bg-secondary rounded-lg border border-border flex items-center gap-2">
-              <div>
-                <p className="text-xs text-muted-foreground">Call ID</p>
-                <p className="text-sm font-mono text-foreground truncate max-w-xs">{callId.slice(0, 12)}...</p>
+            <div className="hidden xs:flex px-2 sm:px-3 py-1 sm:py-2 bg-secondary rounded-lg border border-border items-center gap-1 sm:gap-2">
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground">ID</p>
+                <p className="text-xs sm:text-sm font-mono text-foreground truncate max-w-xs">
+                  {callId.slice(0, 10)}...
+                </p>
               </div>
-              <button onClick={handleCopyCallId} className="p-1 hover:bg-muted rounded transition" title="Copy call ID">
+              <button
+                onClick={handleCopyCallId}
+                className="p-1 hover:bg-muted rounded transition flex-shrink-0"
+                title="Copy call ID"
+              >
                 {copied ? (
-                  <Check className="h-4 w-4 text-green-500" />
+                  <Check className="h-3 sm:h-4 w-3 sm:w-4 text-green-500" />
                 ) : (
-                  <Copy className="h-4 w-4 text-muted-foreground" />
+                  <Copy className="h-3 sm:h-4 w-3 sm:w-4 text-muted-foreground" />
                 )}
               </button>
             </div>
           )}
+        </div>
 
-          <div className="h-8 w-px bg-border" />
-          <div className="flex gap-2">
-            <Link href="/">
-              <Button size="icon" variant="ghost" title="Back to home">
-                <Home className="h-5 w-5" />
-              </Button>
-            </Link>
-            <Button size="icon" variant="ghost">
-              <Phone className="h-5 w-5" />
+        {/* Right Actions */}
+        <div className="flex gap-1 sm:gap-2 w-full sm:w-auto">
+          <Link href="/" className="flex-1 sm:flex-none">
+            <Button size="icon" variant="ghost" title="Back to home" className="w-full sm:w-auto">
+              <Home className="h-4 sm:h-5 w-4 sm:w-5" />
             </Button>
-            <Button size="icon" variant="ghost">
-              <Settings className="h-5 w-5" />
-            </Button>
+          </Link>
+          <Button size="icon" variant="ghost" title="Phone" className="flex-1 sm:flex-none">
+            <Phone className="h-4 sm:h-5 w-4 sm:w-5" />
+          </Button>
+          <Button size="icon" variant="ghost" title="Settings" className="flex-1 sm:flex-none">
+            <Settings className="h-4 sm:h-5 w-4 sm:w-5" />
+          </Button>
+          <div className="flex-1 sm:flex-none">
             <LanguageSwitcher />
           </div>
         </div>

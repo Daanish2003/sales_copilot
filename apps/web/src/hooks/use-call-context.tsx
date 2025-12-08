@@ -1,5 +1,6 @@
-import type React from "react"
+"use client"
 
+import type React from "react"
 import { createContext, useContext, useState, useEffect, useCallback } from "react"
 
 interface TranscriptEntry {
@@ -8,140 +9,124 @@ interface TranscriptEntry {
   timestamp: number
 }
 
+const INITIAL_ANALYSIS = {
+  concerns: [] as string[],
+  stage: "Initial Contact",
+  talkExample: "",
+  explanation: "",
+}
+
 interface CallContextType {
   callId: string
   userRole: "agent" | "customer"
   isConnected: boolean
   transcript: TranscriptEntry[]
   callDuration: number
-  analysis: {
-    concerns: string[]
-    stage: string
-    talkExample: string
-    explanation: string
-  }
+  analysis: typeof INITIAL_ANALYSIS
+
   addTranscriptEntry: (entry: TranscriptEntry) => void
   updateAnalysis: (analysis: Partial<CallContextType["analysis"]>) => void
-  startCall: () => void
+
+  startCall: (opts?: { callId?: string }) => void
   endCall: () => void
+
+  // 🔽 new helpers for resetting state
+  resetTranscript: () => void
+  resetAnalysis: () => void
+  resetCallState: () => void
 }
 
 const CallContext = createContext<CallContextType | undefined>(undefined)
 
-export function CallProvider({ children, role }: { children: React.ReactNode; role: "agent" | "customer" }) {
+export function CallProvider({
+  children,
+  role,
+}: {
+  children: React.ReactNode
+  role: "agent" | "customer"
+}) {
   const [callId, setCallId] = useState("")
   const [isConnected, setIsConnected] = useState(false)
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([])
   const [callDuration, setCallDuration] = useState(0)
-  const [analysis, setAnalysis] = useState({
-    concerns: [] as string[],
-    stage: "Initial Contact",
-    talkExample: "",
-    explanation: "",
-  })
+  const [analysis, setAnalysis] = useState(INITIAL_ANALYSIS)
 
-  // Initialize call
+  // Initialize call (first mount)
   useEffect(() => {
-    const initializeCall = async () => {
+    const initializeCall = () => {
       const urlCallId = new URLSearchParams(window.location.search).get("callId")
-      if (urlCallId) {
-        setCallId(urlCallId)
-      } else {
-        const newCallId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-        setCallId(newCallId)
-        // Update URL with call ID so other user can join
+
+      const newCallId =
+        urlCallId ?? `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+      setCallId(newCallId)
+
+      if (!urlCallId) {
         const newUrl = new URL(window.location.href)
         newUrl.searchParams.set("callId", newCallId)
         window.history.replaceState({}, "", newUrl)
       }
+
       setIsConnected(true)
     }
 
     initializeCall()
   }, [])
 
-  // Track call duration
+  // Track call duration while connected
   useEffect(() => {
     if (!isConnected) return
 
     const interval = setInterval(() => {
-      setCallDuration((prev) => prev + 1)
+      setCallDuration(prev => prev + 1)
     }, 1000)
 
     return () => clearInterval(interval)
   }, [isConnected])
 
-  // Polling for shared state updates
-  useEffect(() => {
-    if (!isConnected || !callId) return
+  const addTranscriptEntry = useCallback((entry: TranscriptEntry) => {
+    setTranscript(prev => [...prev, entry])
+  }, [])
 
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/calls/${callId}`)
-        if (response.ok) {
-          const data = await response.json()
-          if (data.transcript) {
-            setTranscript(data.transcript)
-          }
-          if (data.analysis) {
-            setAnalysis(data.analysis)
-          }
-        }
-      } catch (error) {
-        console.log("[v0] Polling error:", error)
-      }
-    }, 500)
+  const updateAnalysis = useCallback((newAnalysis: Partial<CallContextType["analysis"]>) => {
+    setAnalysis(prev => ({ ...prev, ...newAnalysis }))
+  }, [])
 
-    return () => clearInterval(pollInterval)
-  }, [isConnected, callId])
+  // 🔽 Reset helpers
+  const resetTranscript = useCallback(() => {
+    setTranscript([])
+  }, [])
 
-  const addTranscriptEntry = useCallback(
-    async (entry: TranscriptEntry) => {
-      setTranscript((prev) => [...prev, entry])
+  const resetAnalysis = useCallback(() => {
+    setAnalysis(INITIAL_ANALYSIS)
+  }, [])
 
-      // Persist to API
-      if (callId) {
-        try {
-          await fetch(`/api/calls/${callId}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ transcript: [...transcript, entry] }),
-          })
-        } catch (error) {
-          console.log("[v0] Error saving transcript:", error)
-        }
-      }
-    },
-    [callId, transcript],
-  )
+  const resetCallState = useCallback(() => {
+    setTranscript([])
+    setCallDuration(0)
+    setAnalysis(INITIAL_ANALYSIS)
+  }, [])
 
-  const updateAnalysis = useCallback(
-    async (newAnalysis: Partial<CallContextType["analysis"]>) => {
-      const updated = { ...analysis, ...newAnalysis }
-      setAnalysis(updated)
+  // Start a new call (optionally with a specific callId)
+  const startCall = useCallback((opts?: { callId?: string }) => {
+    const newCallId =
+      opts?.callId ?? `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
-      // Persist to API
-      if (callId) {
-        try {
-          await fetch(`/api/calls/${callId}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ analysis: updated }),
-          })
-        } catch (error) {
-          console.log("[v0] Error saving analysis:", error)
-        }
-      }
-    },
-    [callId, analysis],
-  )
-
-  const startCall = useCallback(() => {
+    setCallId(newCallId)
     setIsConnected(true)
+    setTranscript([])
+    setCallDuration(0)
+    setAnalysis(INITIAL_ANALYSIS)
+
+    // update URL
+    const newUrl = new URL(window.location.href)
+    newUrl.searchParams.set("callId", newCallId)
+    window.history.replaceState({}, "", newUrl)
   }, [])
 
   const endCall = useCallback(() => {
     setIsConnected(false)
+    // you can choose to keep transcript/analysis or clear them here
   }, [])
 
   return (
@@ -157,6 +142,9 @@ export function CallProvider({ children, role }: { children: React.ReactNode; ro
         updateAnalysis,
         startCall,
         endCall,
+        resetTranscript,
+        resetAnalysis,
+        resetCallState,
       }}
     >
       {children}

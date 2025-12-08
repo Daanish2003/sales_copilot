@@ -8,7 +8,7 @@ export default function AgentPage() {
   return (
     <CallProvider role="agent">
       <LanguageProvider>
-        <main className="min-h-screen bg-background">
+        <main className="min-h-screen bg-background overflow-hidden">
           <CopilotDashboard />
         </main>
       </LanguageProvider>
