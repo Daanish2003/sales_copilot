@@ -1,3 +1,4 @@
+"use client"
 import { LanguageProvider, useLanguage } from "@/hooks/use-language"
 import { ArrowRight, Headphones, Users } from "lucide-react"
 import { useState } from "react"
