@@ -1,7 +1,8 @@
-import { config } from '../../config/media-config.js';
-import { routerManager } from '../../mediasoup/managers/media-router-manager.js';
-import { mediasoupWorkerManager } from '../../mediasoup/managers/media-worker-manager.js';
-import { Room } from '../classes/room.js'
+import { config } from "@/config/media-config";
+import { routerManager } from "./route.manager";
+import { mediasoupWorkerManager } from "./worker.manager";
+import { Room } from "@/modules/room/room";
+
 
 class RoomManager {
     private static instance: RoomManager
@@ -13,19 +14,19 @@ class RoomManager {
 
     public static getInstance() {
       if(!RoomManager.instance) {
-         RoomManager.instance = new RoomManager()
+        RoomManager.instance = new RoomManager()
       }
 
       return RoomManager.instance
     }
 
-    async createRoom(roomId: string, topic: string, prompt: string, userId: string) {
+    async createRoom(roomId: string, userId: string) {
       if(!roomManager.hasRoom(roomId)) {
               try {
                   const worker = await mediasoupWorkerManager.getAvailableWorker()
                   const router = await worker.createRouter(config.mediasoup.router)
                   routerManager.addRouter(router)
-                  const room= new Room(roomId, topic, userId, router, prompt);
+                  const room= new Room(roomId, userId, router);
                   this.rooms.set(room.roomId, room)
               } catch (error) {
                   throw new Error(`Room Manager Failed to create room: ${error}`)
@@ -35,10 +36,10 @@ class RoomManager {
 
     async joinRoom(roomId: string, userId: string, socketId: string) {
       if (!this.hasRoom(roomId)) {
-         return {
+        return {
             success: false,
             message: "Room not found",
-         }
+        }
       }
       
       const room = this.getRoom(roomId);
@@ -64,14 +65,13 @@ class RoomManager {
       this.rooms.delete(roomId)
     }
 
-    getRoomBySocketId(socketId: string) {
+    findRoomByUser(userId: string): Room | null {
       for (const room of this.rooms.values()) {
-        if(room.socketId === socketId) {
-          return room
-        }
+          if (room.hasParticipant(userId)) {
+              return room;
+          }
       }
-
-      return undefined
+      return null;
     }
 }
 

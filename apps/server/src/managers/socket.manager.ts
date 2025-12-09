@@ -1,90 +1,260 @@
-import { Server, Socket } from "socket.io";
-import { Server as HttpServer } from "node:http";
-import { server } from "../../../index.js";
-import { DtlsParameters, IceCandidate, IceParameters } from "mediasoup/node/lib/WebRtcTransportTypes.js";
-import { MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/node/lib/rtpParametersTypes.js";
-import { roomManager } from "../../room/manager/room-manager.js";
-import { validateToken } from "../../../module/jwt.js";
-import { tryCatch } from "../../../utils/tryCatch.js";
-import { AgentPipeline } from "../../pipeline/core/agent-pipeline.js";
+import { Server as SocketServer, Socket } from "socket.io";
+import type { DtlsParameters, IceCandidate, IceParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
+import { logger } from "@/utils/logger";
+import { roomManager } from "./room.manager";
+
+
+interface JoinRoomPayload {
+  roomId: string;
+  userId: string;
+}
+
+interface JoinRoomResponse {
+  success: boolean;
+  message: string;
+  routerRtpCap?: RtpCapabilities;
+}
 
 export class SocketManager {
   private static instance: SocketManager;
-  private io: Server;
-  private connections: Map<string, Socket>;
+  private io: SocketServer | null = null;
+  private readonly sockets: Map<string, Socket> = new Map();
+	private readonly userSocketMap: Map<string, string> = new Map();
 
-  constructor(httpServer: HttpServer) {
-    this.connections = new Map();
-    this.io = new Server(httpServer, {
-      cors: {
-        origin: process.env.FRONTEND_URL,
-        methods: ["GET", "POST"],
-        credentials: true,
-        allowedHeaders: ["Content-Type"],
-      },
-    });
-
-    this.io.use(async (socket, next) => {
-      const token = socket.handshake.auth.token
-
-      const { error } = await tryCatch(validateToken(token))
-
-      console.log(error)
-
-      if(error) {
-        next(error)
-      }
-
-      next()
-    })
-
-    this.io.on("connection", (socket) => {
-      console.log(`Client connected: ${socket.id}`);
-      this.connections.set(socket.id, socket);
-
-      this.socketListeners(socket)
-    });
-  }
+  constructor() {}
 
   static getInstance() {
     if (!SocketManager.instance) {
-      SocketManager.instance = new SocketManager(server);
+      SocketManager.instance = new SocketManager();
     }
 
     return SocketManager.instance;
   }
 
-  addSocket(socket: Socket) {
-    this.connections.set(socket.id, socket);
+  initialize(io: SocketServer): void {
+    this.io = io;
+    this.setupMiddleware();
+    this.setupConnectionHandler();
   }
 
-  getSocket(socketId: string) {
-    return this.connections.get(socketId);
-  }
+  private setupMiddleware(): void {
+		this.io?.use(this.authMiddleware.bind(this));
+	}
 
-  hasSocket(socketId: string) {
-    return this.connections.has(socketId);
-  }
+  private authMiddleware(socket: Socket, next: (err?: Error) => void) {
+		const userData = this.extractToken(socket);
 
-  socketListeners(socket: Socket) {
-    socket.on(
-      "joinRoom",
-      async (
-        { roomId, userId }: { roomId: string; userId: string },
-        callback: (response: { success: boolean; message: string; routerRtpCap?: RtpCapabilities }) => void
-      ) => {
-        try {
-          const response = await roomManager.joinRoom(roomId, userId, socket.id);
-          callback(response);
-        } catch (error) {
-          console.error("Error in joining room:", error);
-          callback({
-            success: false,
-            message: "Connection error failed to join room",
-          });
-        }
+		if (!userData) {
+			return next(new Error("No user data provided"));
+		}
+
+		socket.user = {
+			name: userData.name,
+			socketId: socket.id,
+			userId: userData.userId,
+      role: userData.role
+		};
+		next();
+	}
+
+
+  private extractToken(
+		socket: Socket
+	): { name: string; userId: string, role: "user" | "agent" } | null {
+		const aTok = socket.handshake.auth.token;
+		if (aTok) {
+			return this.normalizeToken(aTok);
+		}
+		return null;
+	}
+
+	private normalizeToken(
+		token: string | string[]
+	): { name: string; userId: string, role: "user" | "agent" } | null {
+		const tokenValue = Array.isArray(token) ? token[0] : token;
+		if (typeof tokenValue === "string") {
+			try {
+				const parsed = JSON.parse(tokenValue.trim());
+				const { name, userId, role } = parsed;
+
+				if (typeof name === "string" && typeof userId === "string" && (role === "user" || role === "agent")) {
+					return { name, userId, role };
+				}
+				return null;
+			} catch {
+				return null;
+			}
+		}
+		return null;
+	}
+
+	private setupConnectionHandler(): void {
+		this.io?.on("connection", this.handleConnection.bind(this));
+	}
+
+  getSocketById(socketId: string): Socket | null {
+		const socket = this.sockets.get(socketId);
+
+		if (!socket) {
+			logger.warn("Socket not found", { socketId });
+			return null;
+		}
+
+		return socket;
+	}
+
+	getSocketByUserId(userId: string): Socket | null {
+		const socketId = this.userSocketMap.get(userId);
+		if (!socketId) {
+			logger.warn("No socket found for user", { userId });
+			return null;
+		}
+		return this.getSocketById(socketId);
+	}
+
+	getIO() {
+		if (!this.io) {
+			logger.error("Socket.io not initialized");
+			return null;
+		}
+		return this.io;
+	}
+
+  private handleConnection(socket: Socket) {
+		try {
+			const userId = socket.user.userId;
+			const oldSocketId = this.userSocketMap.get(userId);
+			const oldSocket = oldSocketId ? this.sockets.get(oldSocketId) : undefined;
+
+			if (oldSocket && oldSocket.id !== socket.id) {
+				logger.info("Detected reconnection attempt", {
+					userId,
+					oldSocketId,
+					newSocketId: socket.id,
+				});
+				this.handleReconnection(socket, oldSocket);
+				return;
+			}
+
+			this.sockets.set(socket.id, socket);
+			this.userSocketMap.set(userId, socket.id);
+
+			this.setupSocketEventHandlers(socket);
+
+			socket.emit("connected", {
+				message: "Connected successfully",
+				name: socket.user.name,
+				userId: socket.user.userId,
+				socketId: socket.id,
+				queueStatus: "waiting",
+			});
+
+			logger.info("User connected", {
+				name: socket.user.name,
+				userId,
+				socketId: socket.id,
+			});
+		} catch (error) {
+			logger.error("Error handling socket connection", {
+				error,
+				name: socket.user.name,
+				socketId: socket.id,
+			});
+			socket.emit("error", { message: "Failed to connect" });
+			socket.disconnect(true);
+		}
+	}
+
+	private handleReconnection(newSocket: Socket, oldSocket: Socket): void {
+		const userId = newSocket.user.userId;
+
+		try {
+			logger.info("Handling reconnection", {
+				userId,
+				oldSocketId: oldSocket.id,
+				newSocketId: newSocket.id,
+			});
+
+			const room = roomManager.findRoomByUser(userId);
+
+			this.sockets.delete(oldSocket.id);
+			this.sockets.set(newSocket.id, newSocket);
+			this.userSocketMap.set(userId, newSocket.id);
+
+			if (room) {
+				room.playerManager.updatePlayerSocketId(userId, newSocket.id);
+				newSocket.join(room.id);
+
+				logger.info("User rejoined previous room", {
+					roomId: room.id,
+					userId,
+					newSocketId: newSocket.id,
+				});
+
+				const remaining = room.gameManager.getRemainingCooldown(userId);
+				if (remaining > 0) {
+					newSocket.emit("restriction-active", {
+						message: "You're still on cooldown.",
+						remaining,
+					});
+					logger.info("Restriction active for reconnected user", {
+						userId,
+						roomId: room.id,
+						remaining,
+					});
+				}
+
+				const io = this.getIO();
+				if (io) {
+					io.to(room.id).emit("player-reconnected", {
+						userId,
+						name: newSocket.user.name,
+					});
+				}
+			} else {
+				logger.warn("Reconnection attempted but room not found for user", {
+					userId,
+				});
+			}
+
+			oldSocket.removeAllListeners();
+			oldSocket.disconnect(true);
+
+			this.setupSocketEventHandlers(newSocket);
+
+			newSocket.emit("reconnected", {
+				message: "Reconnected successfully",
+				userId,
+				socketId: newSocket.id,
+			});
+		} catch (error) {
+			logger.error("Error handling reconnection", { error, userId });
+			newSocket.emit("error", { message: "Failed to reconnect" });
+		}
+	}
+
+   private async handleJoinRoom(
+    socket: Socket,
+    { roomId, userId }: JoinRoomPayload,
+    callback: (response: JoinRoomResponse) => void
+  ) {
+    try {
+      if(socket.user.role !== "user"){
+        const response = await roomManager.createRoom(roomId, userId);
       }
-    );
+      const response = await roomManager.joinRoom(roomId, userId, socket.id);
+      callback(response);
+    } catch (error) {
+      console.error("Error in joining room:", error);
+      callback({
+        success: false,
+        message: "Connection error failed to join room",
+      });
+    }
+  }
+
+  setupSocketEventHandlers(socket: Socket) {
+    socket.on("joinRoom", this.handleJoinRoom.bind(this, socket));
 
     socket.on(
       "createProducerTransport",
