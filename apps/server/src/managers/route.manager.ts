@@ -1,4 +1,6 @@
 import type { Router } from "mediasoup/types"
+import HTTP_STATUS from "http-status";
+import { AppError } from "@/utils/errors";
 
 class MediasoupRouterManager {
     private static instance: MediasoupRouterManager
@@ -20,7 +22,11 @@ class MediasoupRouterManager {
         try {
             this.routers.set(router.id, router)
         } catch (error) {
-            throw new Error(`MediaRouterManager failed to add router ${error}`)
+            throw new AppError("MediaRouterManager failed to add router", {
+                statusCode: HTTP_STATUS.INTERNAL_SERVER_ERROR,
+                code: "ROUTER_ADD_FAILED",
+                cause: error
+            })
         }
     }
 
@@ -29,23 +35,17 @@ class MediasoupRouterManager {
             const router = this.routers.get(routerId)
             return router
         } catch (error) {
-            throw new Error(`MediaRouterManager failed to get router ${error}`)
+            throw new AppError("MediaRouterManager failed to get router", {
+                statusCode: HTTP_STATUS.INTERNAL_SERVER_ERROR,
+                code: "ROUTER_GET_FAILED",
+                cause: error
+            })
         }
     }
 
     hasRouter(routerId: string) {
         return this.routers.has(routerId)
     }
-    
-    async getRouterRtpCap(routerId: string) {
-		if(!this.hasRouter(routerId)) {
-			throw new Error("Router is not Initailized")
-		}
-        const router = this.getRouter(routerId) 
-		const routerRtpCap = router.rtpCapabilities;
-
-		return routerRtpCap;
-	}
 }
 
 export const routerManager = MediasoupRouterManager.getInstance()

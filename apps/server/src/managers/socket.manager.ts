@@ -2,24 +2,18 @@ import { Server as SocketServer, Socket } from "socket.io";
 import type { DtlsParameters, IceCandidate, IceParameters, MediaKind, RtpCapabilities, RtpParameters } from "mediasoup/types";
 import { logger } from "@/utils/logger";
 import { roomManager } from "./room.manager";
-
-
-interface JoinRoomPayload {
-  roomId: string;
-  userId: string;
-}
-
-interface JoinRoomResponse {
-  success: boolean;
-  message: string;
-  routerRtpCap?: RtpCapabilities;
-}
+import type { CreateConsumerTransportResponse, CreateProducerTransportResponse, JoinRoomPayload, JoinRoomResponse } from "@/utils/types";
+import { toAppError } from "@/utils/errors";
+import { isProd } from "@/utils/prod";
+import { connectClientProducerTransport, createClientProducerTransport } from "@/modules/media/media-transport";
+import { userManager } from "./user.manager";
+import { createClientConsumerTrack, createClientProducerTrack, unpauseConsumer } from "@/modules/media/media-track";
 
 export class SocketManager {
   private static instance: SocketManager;
   private io: SocketServer | null = null;
   private readonly sockets: Map<string, Socket> = new Map();
-	private readonly userSocketMap: Map<string, string> = new Map();
+  private readonly userSocketMap: Map<string, string> = new Map();
 
   constructor() {}
 
@@ -38,432 +32,628 @@ export class SocketManager {
   }
 
   private setupMiddleware(): void {
-		this.io?.use(this.authMiddleware.bind(this));
-	}
+    this.io?.use(this.authMiddleware.bind(this));
+  }
 
   private authMiddleware(socket: Socket, next: (err?: Error) => void) {
-		const userData = this.extractToken(socket);
+    const userData = this.extractToken(socket);
 
-		if (!userData) {
-			return next(new Error("No user data provided"));
-		}
+    if (!userData) {
+      return next(new Error("No user data provided"));
+    }
 
-		socket.user = {
-			name: userData.name,
-			socketId: socket.id,
-			userId: userData.userId,
-      role: userData.role
-		};
-		next();
-	}
-
+    // attach a `user` object to socket (assume typing exists elsewhere)
+    socket.user = {
+      name: userData.name,
+      socketId: socket.id,
+      userId: userData.userId,
+      role: userData.role,
+    };
+    next();
+  }
 
   private extractToken(
-		socket: Socket
-	): { name: string; userId: string, role: "user" | "agent" } | null {
-		const aTok = socket.handshake.auth.token;
-		if (aTok) {
-			return this.normalizeToken(aTok);
-		}
-		return null;
-	}
+    socket: Socket
+  ): { name: string; userId: string; role: "user" | "agent" } | null {
+    const aTok = socket.handshake.auth.token;
+    if (aTok) {
+      return this.normalizeToken(aTok);
+    }
+    return null;
+  }
 
-	private normalizeToken(
-		token: string | string[]
-	): { name: string; userId: string, role: "user" | "agent" } | null {
-		const tokenValue = Array.isArray(token) ? token[0] : token;
-		if (typeof tokenValue === "string") {
-			try {
-				const parsed = JSON.parse(tokenValue.trim());
-				const { name, userId, role } = parsed;
+  private normalizeToken(
+    token: string | string[]
+  ): { name: string; userId: string; role: "user" | "agent" } | null {
+    const tokenValue = Array.isArray(token) ? token[0] : token;
+    if (typeof tokenValue === "string") {
+      try {
+        const parsed = JSON.parse(tokenValue.trim());
+        const { name, userId, role } = parsed;
 
-				if (typeof name === "string" && typeof userId === "string" && (role === "user" || role === "agent")) {
-					return { name, userId, role };
-				}
-				return null;
-			} catch {
-				return null;
-			}
-		}
-		return null;
-	}
+        if (typeof name === "string" && typeof userId === "string" && (role === "user" || role === "agent")) {
+          return { name, userId, role };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
 
-	private setupConnectionHandler(): void {
-		this.io?.on("connection", this.handleConnection.bind(this));
-	}
+  private setupConnectionHandler(): void {
+    this.io?.on("connection", this.handleConnection.bind(this));
+  }
 
   getSocketById(socketId: string): Socket | null {
-		const socket = this.sockets.get(socketId);
+    const socket = this.sockets.get(socketId);
 
-		if (!socket) {
-			logger.warn("Socket not found", { socketId });
-			return null;
-		}
+    if (!socket) {
+      logger.warn("Socket not found", { socketId });
+      return null;
+    }
 
-		return socket;
-	}
+    return socket;
+  }
 
-	getSocketByUserId(userId: string): Socket | null {
-		const socketId = this.userSocketMap.get(userId);
-		if (!socketId) {
-			logger.warn("No socket found for user", { userId });
-			return null;
-		}
-		return this.getSocketById(socketId);
-	}
+  getSocketByUserId(userId: string): Socket | null {
+    const socketId = this.userSocketMap.get(userId);
+    if (!socketId) {
+      logger.warn("No socket found for user", { userId });
+      return null;
+    }
+    return this.getSocketById(socketId);
+  }
 
-	getIO() {
-		if (!this.io) {
-			logger.error("Socket.io not initialized");
-			return null;
-		}
-		return this.io;
-	}
+  getIO() {
+    if (!this.io) {
+      logger.error("Socket.io not initialized");
+      return null;
+    }
+    return this.io;
+  }
 
   private handleConnection(socket: Socket) {
-		try {
-			const userId = socket.user.userId;
-			const oldSocketId = this.userSocketMap.get(userId);
-			const oldSocket = oldSocketId ? this.sockets.get(oldSocketId) : undefined;
+    try {
+      const userId = socket.user.userId;
+      const oldSocketId = this.userSocketMap.get(userId);
+      const oldSocket = oldSocketId ? this.sockets.get(oldSocketId) : undefined;
 
-			if (oldSocket && oldSocket.id !== socket.id) {
-				logger.info("Detected reconnection attempt", {
-					userId,
-					oldSocketId,
-					newSocketId: socket.id,
-				});
-				this.handleReconnection(socket, oldSocket);
-				return;
-			}
+      if (oldSocket && oldSocket.id !== socket.id) {
+        logger.info("Detected reconnection attempt", {
+          userId,
+          oldSocketId,
+          newSocketId: socket.id,
+        });
+        this.handleReconnection(socket, oldSocket);
+        return;
+      }
 
-			this.sockets.set(socket.id, socket);
-			this.userSocketMap.set(userId, socket.id);
+      this.sockets.set(socket.id, socket);
+      this.userSocketMap.set(userId, socket.id);
 
-			this.setupSocketEventHandlers(socket);
+      this.setupSocketEventHandlers(socket);
 
-			socket.emit("connected", {
-				message: "Connected successfully",
-				name: socket.user.name,
-				userId: socket.user.userId,
-				socketId: socket.id,
-				queueStatus: "waiting",
-			});
+      socket.emit("connected", {
+        message: "Connected successfully",
+        name: socket.user.name,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        queueStatus: "waiting",
+      });
 
-			logger.info("User connected", {
-				name: socket.user.name,
-				userId,
-				socketId: socket.id,
-			});
-		} catch (error) {
-			logger.error("Error handling socket connection", {
-				error,
-				name: socket.user.name,
-				socketId: socket.id,
-			});
-			socket.emit("error", { message: "Failed to connect" });
-			socket.disconnect(true);
-		}
-	}
+      logger.info("User connected", {
+        name: socket.user.name,
+        userId,
+        socketId: socket.id,
+      });
+    } catch (error) {
+      const appError = toAppError(error, "Failed to handle socket connection", {
+        code: "SOCKET_CONNECTION_FAILED",
+      });
+      logger.error("Error handling socket connection", {
+        message: appError.message,
+        code: appError.code,
+        stack: appError.stack,
+        name: socket.user?.name,
+        socketId: socket.id,
+      });
+      socket.emit("error", { message: isProd ? "Failed to connect" : appError.message, code: appError.code });
+      socket.disconnect(true);
+    }
+  }
 
-	private handleReconnection(newSocket: Socket, oldSocket: Socket): void {
-		const userId = newSocket.user.userId;
+  private handleReconnection(newSocket: Socket, oldSocket: Socket): void {
+  const user = newSocket.user;
+  if (!user) {
+    newSocket.emit("error", { message: "Invalid reconnection" });
+    newSocket.disconnect(true);
+    return;
+  }
 
-		try {
-			logger.info("Handling reconnection", {
-				userId,
-				oldSocketId: oldSocket.id,
-				newSocketId: newSocket.id,
-			});
+  const userId = user.userId;
 
-			const room = roomManager.findRoomByUser(userId);
+  this.sockets.delete(oldSocket.id);
+  this.sockets.set(newSocket.id, newSocket);
+  this.userSocketMap.set(userId, newSocket.id);
 
-			this.sockets.delete(oldSocket.id);
-			this.sockets.set(newSocket.id, newSocket);
-			this.userSocketMap.set(userId, newSocket.id);
+  const room = roomManager.findRoomByUser(userId);
+  if (room) {
+    newSocket.join(room.roomId);
 
-			if (room) {
-				room.playerManager.updatePlayerSocketId(userId, newSocket.id);
-				newSocket.join(room.id);
+    const io = this.getIO();
+    io?.to(room.roomId).emit("player-reconnected", {
+      userId,
+      name: user.name,
+      socketId: newSocket.id,
+    });
+  }
 
-				logger.info("User rejoined previous room", {
-					roomId: room.id,
-					userId,
-					newSocketId: newSocket.id,
-				});
+  try {
+    oldSocket.removeAllListeners();
+    if (oldSocket.connected) {
+      oldSocket.disconnect(true);
+    }
+  } catch {}
 
-				const remaining = room.gameManager.getRemainingCooldown(userId);
-				if (remaining > 0) {
-					newSocket.emit("restriction-active", {
-						message: "You're still on cooldown.",
-						remaining,
-					});
-					logger.info("Restriction active for reconnected user", {
-						userId,
-						roomId: room.id,
-						remaining,
-					});
-				}
+  this.setupSocketEventHandlers(newSocket);
 
-				const io = this.getIO();
-				if (io) {
-					io.to(room.id).emit("player-reconnected", {
-						userId,
-						name: newSocket.user.name,
-					});
-				}
-			} else {
-				logger.warn("Reconnection attempted but room not found for user", {
-					userId,
-				});
-			}
+  newSocket.emit("reconnected", {
+    message: "Reconnected successfully",
+    userId,
+    socketId: newSocket.id,
+  });
+}
 
-			oldSocket.removeAllListeners();
-			oldSocket.disconnect(true);
-
-			this.setupSocketEventHandlers(newSocket);
-
-			newSocket.emit("reconnected", {
-				message: "Reconnected successfully",
-				userId,
-				socketId: newSocket.id,
-			});
-		} catch (error) {
-			logger.error("Error handling reconnection", { error, userId });
-			newSocket.emit("error", { message: "Failed to reconnect" });
-		}
-	}
-
-   private async handleJoinRoom(
+  private async handleJoinRoom(
     socket: Socket,
-    { roomId, userId }: JoinRoomPayload,
+    { roomId }: { roomId: string },
     callback: (response: JoinRoomResponse) => void
   ) {
     try {
-      if(socket.user.role !== "user"){
-        const response = await roomManager.createRoom(roomId, userId);
-      }
-      const response = await roomManager.joinRoom(roomId, userId, socket.id);
+      const response = await roomManager.joinRoom(roomId, socket.user);
       callback(response);
     } catch (error) {
-      console.error("Error in joining room:", error);
+      const appError = toAppError(error, "Failed to join room", {
+        code: "JOIN_ROOM_FAILED",
+      });
+      logger.error("Error in joining room", {
+        message: appError.message,
+        code: appError.code,
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        stack: appError.stack,
+      });
       callback({
         success: false,
-        message: "Connection error failed to join room",
+        message: isProd && !appError.isOperational ? "Failed to join room" : appError.message,
       });
     }
   }
 
-  setupSocketEventHandlers(socket: Socket) {
-    socket.on("joinRoom", this.handleJoinRoom.bind(this, socket));
+  private async handleCreateProducerTransport(
+    socket: Socket,
+    { roomId }: { roomId: string },
+    callback: (response: CreateProducerTransportResponse) => void
+  ) {
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      callback({
+        success: false,
+        message: "Room not found",
+        clientTransportParams: null,
+      });
+      return;
+    }
 
-    socket.on(
-      "createProducerTransport",
-      async (
-        { roomId }: { roomId: string },
-        callback: (response: {
-          clientTransportParams: {
-            id: string;
-            iceParameters: IceParameters;
-            iceCandidates: IceCandidate[];
-            dtlsParameters: DtlsParameters;
-          };
-        }) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
-        if(!room) {
-          throw new Error("CreateProducerRequest: Room not found")
-        }
+    try {
+      const transportParams = await createClientProducerTransport(room.router);
+      const user = userManager.getByUserId(socket.user.userId)
 
-        const clientTransportParams = await room.mediaTransports.createClientProducerTransport(room.router)
-        callback({ clientTransportParams });
+      if(!user) {
+        callback({
+          success: false,
+          message: "User not found",
+          clientTransportParams: null,
+        })
+        return
       }
-    );
+      user.setProducerTransport(transportParams.transport)
+      callback({
+        success: true,
+        message: "Producer transport created successfully",
+        clientTransportParams: transportParams.transportParams,
+      });
 
-    socket.on(
-      "connect-producer-transport",
-      async (
-        { roomId, dtlsParameters }: { roomId: string; dtlsParameters: DtlsParameters },
-        callback: (response: { success: boolean }) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
+    } catch (error) {
+      const appError = toAppError(error, "Failed to create producer transport", {
+        code: "CREATE_PRODUCER_TRANSPORT_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({
+        success: false,
+        message: isProd && !appError.isOperational ? "Unable to create producer transport" : appError.message,
+        clientTransportParams: null,
+      });
+    }
+  }
 
-        if(!room) {
-          throw new Error("ConnectProducerRequest: Room not found")
-        }
-        await room.mediaTransports.connectClientProducerTransport({
-          dtlsParameters
+  private async handleConnectProducerTransport(
+    socket: Socket,
+    { roomId, dtlsParameters }: { roomId: string; dtlsParameters: DtlsParameters },
+    callback: (response: { success: boolean; message: string }) => void
+  ) {
+    try {
+      const user = userManager.getByUserId(socket.user.userId)
+      if(!user) {
+        callback({
+          success: false,
+          message: "User not found",
+        })
+        return
+      }
+      const producerTransport = user.getProducerTransport()
+      if(!producerTransport) {
+        callback({
+          success: false,
+          message: "Producer transport not found",
         })
 
-        callback({ success: true });
+        return
       }
-    );
 
-    socket.on(
-      "createConsumerTransport",
-      async (
-        { roomId }: { roomId: string },
-        callback: (response: {
-          clientTransportParams: {
-            id: string;
-            iceParameters: IceParameters;
-            iceCandidates: IceCandidate[];
-            dtlsParameters: DtlsParameters;
-          };
-        }) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
+      await connectClientProducerTransport({
+        transport: producerTransport,
+        dtlsParameters,
+      })
 
-        if(!room) {
-          throw new Error("CreateConsumerRequest: Room not found")
-        }
+      callback({ success: true, message: "Producer transport connected successfully" });
+    } catch (error) {
+      const appError = toAppError(error, "Failed to connect producer transport", {
+        code: "CONNECT_PRODUCER_TRANSPORT_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({ success: false, message: isProd && !appError.isOperational ? "Unable to connect producer transport" : appError.message });
+    }
+  }
 
-        const clientTransportParams = await room.mediaTransports.createClientConsumerTransport(room.router)
-        callback({ clientTransportParams });
-      }
-    );
+  private async onCreateConsumerTransport(
+    socket: Socket,
+    { roomId }: { roomId: string },
+    callback: (response: CreateConsumerTransportResponse) => void
+  ) {
+    const room = roomManager.getRoom(roomId);
 
-    socket.on(
-      "connect-consumer-transport",
-      async (
-        { roomId, dtlsParameters }: { roomId: string; dtlsParameters: DtlsParameters },
-        callback: (response: { success: boolean }) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
-        if(!room) {
-          throw new Error("ConnectConsumerRequest: Room not found")
-        }
-        await room.mediaTransports!.connectClientConsumerTransport({
-          dtlsParameters
+    if (!room) {
+      return callback({ 
+        success: false,
+        message: "Room not found",
+        clientTransportParams: null 
+      });
+    }
+
+    try {
+      const { transport, transportParams: clientTransportParams } = await createClientProducerTransport(room.router);
+
+      const user = userManager.getByUserId(socket.user.userId)
+
+      if(!user) {
+        return callback({
+          success: false,
+          message: "User not found",
+          clientTransportParams: null
         })
-        callback({ success: true });
       }
-    );
 
-    socket.on(
-      "start-produce",
-      async (
-        { roomId, kind, rtpParameters }: { roomId: string; kind: MediaKind; rtpParameters: RtpParameters },
-        callback: ({ id }: { id: string }) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
-        if(!room) {
-          throw new Error("StartProducingRequest: Room not found")
-        }
+      user.setConsumerTransport(transport)
+      callback({
+        success: true,
+        message: "Consumer transport created successfully", 
+        clientTransportParams 
+      });
+    } catch (error) {
+      const appError = toAppError(error, "Failed to create consumer transport", {
+        code: "CREATE_CONSUMER_TRANSPORT_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({
+        success: false,
+        message: isProd && !appError.isOperational ? "Unable to create consumer transport" : appError.message,
+        clientTransportParams: null
+      });
+    }
+  }
 
-        const id = await room.mediaTracks.createClientProducerTrack({
-          kind,
-          rtpParameters,
-          transport: room.mediaTransports.clientProducerTransport!,
-        })
-        const transport = await room.mediaTransports.createAgentTransport(room.router)
-        const Ctrack = await room.mediaTracks.createAgentConsumerTrack({
-          transport: transport,
-          rtpCap: room.router.rtpCapabilities,
-          trackId: id
-        })
-
-        const Ptrack = await room.mediaTracks.createAgentProducerTrack({
-          transport,
-          listenerTrack: Ctrack
-        })
-
-        const ssrc = Ctrack.rtpParameters.encodings![0]!.ssrc!  
-
-        const agent = new AgentPipeline(room.prompt, Ptrack, ssrc)
-        room.addAgent(agent)
-        agent?.setSocket(socket)
-
-        Ctrack.on('rtp', (rtpPackets) => {
-          agent.stream(rtpPackets)
-        })
-        callback({ id });
+  private async onConnectConsumerTransport(
+    socket: Socket,
+    { roomId, dtlsParameters }: { roomId: string; dtlsParameters: DtlsParameters },
+    callback: (response: { success: boolean }) => void
+  ) {
+    try {
+      const user = userManager.getByUserId(socket.user.userId)
+      if(!user) {
+        return callback({ success: false });
       }
-    );
 
-    socket.on(
-      "consume-media",
-      async (
-        { roomId, rtpCapabilities }: { roomId: string; rtpCapabilities: RtpCapabilities },
-        callback: (
-          response:
-            | {
-                consumerParams?: {
-                  producerId: string;
-                  id: string;
-                  kind: MediaKind;
-                  rtpParameters: RtpParameters;
-                };
-              }
-            | { message: string }
-        ) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
-
-        if(!room) {
-          throw new Error("ConsumeMediaRequest: Room not found")
-        }
-
-        const response = await room.mediaTracks.createClientConsumerTrack({
-          rtpCap: rtpCapabilities,
-          router: room.router,
-          trackId: room.mediaTracks.agentProducerTrack!.id,
-          transport: room.mediaTransports.clientConsumerTransport!
-        }) 
-
-  
-        callback(response);
+      const consumerTransport = user.getConsumerTransport()
+      if(!consumerTransport) {
+        return callback({ success: false });
       }
-    );
 
-    socket.on(
-      "unpauseConsumer",
-      async (
-        { roomId }: { roomId: string },
-        callback: ({ success }: { success: boolean }) => void
-      ) => {
-        const room = roomManager.getRoom(roomId)
+      await connectClientProducerTransport({
+        transport: consumerTransport,
+        dtlsParameters,
+      })
+      callback({ success: true });
+    } catch (error) {
+      const appError = toAppError(error, "Failed to connect consumer transport", {
+        code: "CONNECT_CONSUMER_TRANSPORT_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({ success: false });
+    }
+  }
 
-        if(!room) {
-          throw new Error("ConsumeMediaRequest: Room not found")
-        }
-        const response = await room.mediaTracks.unpauseConsumer()!;
-        callback(response);
+  private async onStartProduce(
+    socket: Socket,
+    { roomId, kind, rtpParameters }: { roomId: string; kind: MediaKind; rtpParameters: RtpParameters },
+    callback: ({ id }: { id: string }) => void
+  ) {
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      return callback({ id: "" });
+    }
+
+    const user = userManager.getByUserId(socket.user.userId)
+    if(!user) {
+      return callback({ id: "" });
+    }
+
+    const clientProducerTransport = user.getProducerTransport()
+    if(!clientProducerTransport) {
+      return callback({ id: "" });
+    }
+
+    try {
+      const producerTrack = await createClientProducerTrack({
+        kind,
+        rtpParameters,
+        transport: clientProducerTransport,
+      });
+
+      if(!producerTrack){
+        return callback({ id: "" });
       }
-    );
 
-    socket.on(
-      "exit-room",
-      async(
-        {roomId} : {roomId: string},
-      ) => {
-        const room = roomManager.getRoom(roomId)
+      user.setProducerTrack(producerTrack.producer)
 
-        if(room) {
-          room.agent?.closeStream()
-          room.mediaTracks.closeTrack()
-          room.mediaTransports.closeTransport()
-          roomManager.removeRoom(room.roomId)
-        }
-      }
-    )
+      callback({ id: producerTrack.producerId });
+    } catch (error) {
+      const appError = toAppError(error, "Failed to start produce", {
+        code: "START_PRODUCE_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({ id: "" });
+    }
+  }
 
-    socket.on("disconnect", async () => {
-        try {
-            console.log("Client Disconnected");
-            this.connections.delete(socket.id);
-
-            const room = roomManager.getRoomBySocketId(socket.id)
-
-            if(room) {
-              room.agent?.closeStream()
-              room.mediaTracks.closeTrack()
-              room.mediaTransports.closeTransport()
-              roomManager.removeRoom(room.roomId)
-            }
-
-          } catch (error) {
-            console.error("Error during disconnection cleanup:", error);
+  private async onConsumeMedia(
+    socket: Socket,
+    { roomId, rtpCapabilities, producerId }: { roomId: string; rtpCapabilities: RtpCapabilities, producerId: string },
+    callback: (
+      response:
+        | {
+            consumerParams?: {
+              producerId: string;
+              id: string;
+              kind: MediaKind;
+              rtpParameters: RtpParameters;
+            };
           }
+        | { message: string }
+    ) => void
+  ) {
+    const room = roomManager.getRoom(roomId);
+
+    if (!room) {
+      return callback({ message: "Room not found" });
+    }
+
+    const user = userManager.getByUserId(socket.user.userId)
+    if(!user) {
+      return callback({ message: "User not found" });
+    }
+
+    const clientConsumerTransport = user.getConsumerTransport()
+    if(!clientConsumerTransport) {
+      return callback({ message: "Consumer transport not found" });
+    }
+    
+    try {
+      const response = await createClientConsumerTrack({
+        rtpCapabilities: rtpCapabilities,
+        router: room.router,
+        transport: clientConsumerTransport,
+        producerId
+      });
+
+      callback(response);
+    } catch (error) {
+      const appError = toAppError(error, "Failed to consume media", {
+        code: "CONSUME_MEDIA_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({ message: isProd && !appError.isOperational ? "Unable to consume media" : appError.message });
+    }
+  }
+
+  private async onUnpauseConsumer(
+    socket: Socket,
+    { roomId, consumerId }: { roomId: string; consumerId: string },
+    callback: ({ success }: { success: boolean }) => void
+  ) {
+    const room = roomManager.getRoom(roomId);
+
+    if (!room) {
+      return callback({ success: false });
+    }
+
+    try {
+      const user = userManager.getByUserId(socket.user.userId)
+
+      if(!user) {
+        return callback({ success: false });
+      }
+
+      // Get the specific consumer track by consumerId
+      const consumerTrack = user.getConsumerTrack(consumerId);
+
+      if (!consumerTrack) {
+        return callback({ success: false });
+      }
+
+      const response = await unpauseConsumer(consumerTrack)
+      callback(response);
+    } catch (error) {
+      const appError = toAppError(error, "Failed to unpause consumer", {
+        code: "UNPAUSE_CONSUMER_FAILED",
+      });
+      logger.error(appError.message, {
+        roomId,
+        userId: socket.user.userId,
+        socketId: socket.id,
+        consumerId, // Log which consumer failed
+        code: appError.code,
+        stack: appError.stack,
+      });
+      callback({ success: false });
+    }
+  }
+
+  private async onDisconnect(socket: Socket) {
+  try {
+    this.sockets.delete(socket.id);
+
+    const userId = socket.user?.userId;
+    if (!userId) return;
+
+    if (this.userSocketMap.get(userId) === socket.id) {
+      this.userSocketMap.delete(userId);
+    }
+
+    const room = roomManager.findRoomByUser(userId);
+    if (!room) return;
+
+    // Clean up user resources through userManager
+    await userManager.removeByUserId(userId);
+
+    // Remove participant from room
+    room.removeParticipant(userId);
+
+    // Remove empty rooms
+    if (room.getParticipantCount() === 0) {
+      roomManager.removeRoom(room.roomId);
+    }
+  } catch (error) {
+    const appError = toAppError(error, "Failed handling socket disconnect", {
+      code: "SOCKET_DISCONNECT_FAILED",
+    });
+    logger.error(appError.message, { socketId: socket.id, userId: socket.user?.userId, error: appError });
+  }
+}
+
+// Replace your onExitRoom method with this:
+
+private async onExitRoom(socket: Socket, { roomId }: { roomId: string }) {
+  try {
+    const room = roomManager.getRoom(roomId);
+
+    if (room) {
+      const userId = socket.user.userId;
+      await userManager.removeByUserId(userId);
+      room.removeParticipant(userId);
+      
+      if (room.getParticipantCount() === 0) {
+        roomManager.removeRoom(room.roomId);
+      }
+    }
+  } catch (error) {
+    const appError = toAppError(error, "Failed to exit room", {
+      code: "EXIT_ROOM_FAILED",
+    });
+    logger.error(appError.message, {
+      roomId,
+      userId: socket.user.userId,
+      socketId: socket.id,
+      code: appError.code,
+      stack: appError.stack,
     });
   }
 }
+
+  private handleGetRtpCapabilities(socket: Socket, callback: (response: { rtpCapabilities: RtpCapabilities | null }) => void) {
+    const room = roomManager.findRoomByUser(socket.user.userId);
+    if (!room) {
+      return callback({ rtpCapabilities: null });
+    }
+
+    return callback({ rtpCapabilities: room.router.rtpCapabilities });
+  }
+
+  setupSocketEventHandlers(socket: Socket) {
+    socket.on("joinRoom", this.handleJoinRoom.bind(this, socket));
+    socket.on("createProducerTransport", this.handleCreateProducerTransport.bind(this, socket));
+    socket.on("connect-producer-transport", this.handleConnectProducerTransport.bind(this, socket));
+    socket.on("getRtpCapabilities", this.handleGetRtpCapabilities.bind(this, socket));
+    socket.on("createConsumerTransport", this.onCreateConsumerTransport.bind(this, socket));
+    socket.on("connect-consumer-transport", this.onConnectConsumerTransport.bind(this, socket));
+    socket.on("start-produce", this.onStartProduce.bind(this, socket));
+    socket.on("consume-media", this.onConsumeMedia.bind(this, socket));
+    socket.on("unpauseConsumer", this.onUnpauseConsumer.bind(this, socket));
+    socket.on("exit-room", this.onExitRoom.bind(this, socket));
+
+    socket.on("disconnect", async () => {
+      await this.onDisconnect(socket);
+    });
+  }
+}
+
+export const socketManager = SocketManager.getInstance();

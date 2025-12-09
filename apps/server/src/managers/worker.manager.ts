@@ -1,6 +1,8 @@
 import os from "os"
 import { Worker } from "mediasoup/node/lib/WorkerTypes.js";
 import { createMediasoupWorker } from "../functions/media-worker.js";
+import HTTP_STATUS from "http-status";
+import { AppError } from "@/utils/errors";
 
 class MediasoupWorkerManager {
     private static instance: MediasoupWorkerManager;
@@ -28,7 +30,10 @@ class MediasoupWorkerManager {
 
     async getAvailableWorker(): Promise<Worker> {
         if (this.workers.size === 0) {
-            throw new Error("No workers available. Please initialize workers first");
+            throw new AppError("No workers available. Please initialize workers first", {
+                statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+                code: "WORKER_NOT_INITIALIZED"
+            });
         }
 
         let leastLoadedWorkerIndex: number | null = null;
@@ -45,7 +50,10 @@ class MediasoupWorkerManager {
         }
 
         if (leastLoadedWorkerIndex === null) {
-            throw new Error("No available worker found");
+            throw new AppError("No available worker found", {
+                statusCode: HTTP_STATUS.SERVICE_UNAVAILABLE,
+                code: "WORKER_NOT_AVAILABLE"
+            });
         }
 
         return this.getWorker(leastLoadedWorkerIndex)!;

@@ -1,29 +1,19 @@
-import type { Router, RtpCapabilities } from "mediasoup/types";
-import { MediaTransport } from "../media/media-transport";
-import { MediaTrack } from "../media/media-track";
-
-interface JoinRoomResponse {
-  success: boolean;
-  message: string;
-  routerRtpCap?: RtpCapabilities;
-}
-
+import type { Router } from "mediasoup/types";
+import type { IUser, JoinRoomResponse } from "@/utils/types";
+import { salesCopilotPrompt } from "@/config/prompt"
 export class Room {
   public readonly roomId: string;
   public readonly authorId: string;
   public readonly prompt: string;
   public readonly router: Router;
-  private participants: Map<string, string>;
+  private participants: Map<string, IUser>;
   public readonly maxParticipants: number;
-
-  public mediaTransports: MediaTransport;
-  public mediaTracks: MediaTrack;
 
   constructor(
     roomId: string,
     authorId: string,
     router: Router,
-    maxParticipants = 2 
+    maxParticipants = 2
   ) {
     this.roomId = roomId;
     this.authorId = authorId;
@@ -32,17 +22,15 @@ export class Room {
     this.maxParticipants = maxParticipants;
 
     this.participants = new Map();
-    this.mediaTransports = new MediaTransport();
-    this.mediaTracks = new MediaTrack();
   }
 
-  public async addParticipant(
-    userId: string,
-    socketId: string
-  ): Promise<JoinRoomResponse> {
-    if (this.participants.has(userId)) {
-      this.participants.set(userId, socketId);
-
+  /**
+   * Add or rejoin a participant
+   */
+  public async addParticipant(user: IUser): Promise<JoinRoomResponse> {
+    // User already exists → treat as rejoin
+    if (this.participants.has(user.userId)) {
+      this.participants.set(user.userId, user);
       return {
         success: true,
         routerRtpCap: this.router.rtpCapabilities,
@@ -50,6 +38,7 @@ export class Room {
       };
     }
 
+    // Room capacity check
     if (this.participants.size >= this.maxParticipants) {
       return {
         success: false,
@@ -57,34 +46,81 @@ export class Room {
       };
     }
 
-    this.participants.set(userId, socketId);
-
-    const routerRtpCap = this.router.rtpCapabilities;
+    this.participants.set(user.userId, user);
 
     return {
       success: true,
-      routerRtpCap,
+      routerRtpCap: this.router.rtpCapabilities,
       message: "You have successfully joined the room",
     };
   }
 
+  /**
+   * Remove a participant from the room
+   */
   public removeParticipant(userId: string): void {
     this.participants.delete(userId);
+
+    // Optional: Trigger callback for analytics/hooks
+    // this.onParticipantRemoved?.(userId);
   }
 
+  /**
+   * Get all participant userIds
+   */
   public getParticipantIds(): string[] {
     return Array.from(this.participants.keys());
   }
 
-  public getParticipantSocketId(userId: string): string | undefined {
-    return this.participants.get(userId);
+  /**
+   * Return the IUser entry (including socketId)
+   */
+  public getParticipant(userId: string): IUser | null {
+    return this.participants.get(userId) ?? null;
   }
 
+  /**
+   * Backward compatibility: previous name was wrong
+   */
+  public getParticipantSocketId(userId: string): IUser | null {
+    return this.getParticipant(userId);
+  }
+
+  /**
+   * Number of participants in room
+   */
   public getParticipantCount(): number {
     return this.participants.size;
   }
 
+  /**
+   * Does this room contain this user?
+   */
   public hasParticipant(userId: string): boolean {
     return this.participants.has(userId);
+  }
+
+  /**
+   * Check if the room has zero participants
+   */
+  public isEmpty(): boolean {
+    return this.participants.size === 0;
+  }
+
+  /**
+   * Called when RoomManager determines the room should be destroyed.
+   * Cleans router + internal maps.
+   */
+  public async close(): Promise<void> {
+    try {
+      if (this.router) {
+        try {
+          this.router.close?.();
+        } catch {}
+      }
+    } catch {}
+
+    // Clear participants
+    this.participants.clear();
   }
 }

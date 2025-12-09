@@ -1,145 +1,131 @@
+// media-transport.stateless.ts
 import type { DirectTransport, DtlsParameters, Router, WebRtcTransport } from "mediasoup/types";
 import { config } from "../../config/media-config";
+import { AppError } from "@/utils/errors";
+import { logger } from "@/utils/logger";
 
-export class MediaTransport {
-  private _producerTransports = new Map<string, WebRtcTransport>();
-  private _consumerTransports = new Map<string, WebRtcTransport>();
-  private _agentTransport: DirectTransport | null = null;
+/**
+ * Extract transport params to send to the client.
+ */
+export function getTransportParams(transport: WebRtcTransport) {
+  return {
+    id: transport.id,
+    iceParameters: transport.iceParameters,
+    iceCandidates: transport.iceCandidates,
+    dtlsParameters: transport.dtlsParameters,
+  } as const;
+}
 
-  constructor() {}
-
-  async createClientProducerTransport(router: Router, userId: string) {
-    try {
-      const transport = await router.createWebRtcTransport(
-        config.mediasoup.webRtcTransport,
-      );
-
-      const transportParams = {
-        id: transport.id,
-        iceParameters: transport.iceParameters,
-        iceCandidates: transport.iceCandidates,
-        dtlsParameters: transport.dtlsParameters,
-      };
-
-      this._producerTransports.set(userId, transport);
-
-      return transportParams;
-    } catch (error) {
-      console.error("Failed to create producer WebRTC transport", error);
-      throw error;
-    }
+/**
+ * Create a producer WebRTC transport. Returns the transport instance + params.
+ * NO state is stored internally — caller is responsible for storing/managing the transport.
+ */
+export async function createClientProducerTransport(router: Router) {
+  try {
+    const transport = await router.createWebRtcTransport(config.mediasoup.webRtcTransport);
+    return { transport, transportParams: getTransportParams(transport) };
+  } catch (error) {
+    const appError = new AppError("Failed to create producer WebRTC transport", {
+      code: "PRODUCER_TRANSPORT_CREATE_FAILED",
+      cause: error,
+    });
+    logger.error(appError.message, { error: appError });
+    throw appError;
   }
+}
 
-  async connectClientProducerTransport({
-    userId,
-    dtlsParameters,
-  }: {
-    userId: string;
-    dtlsParameters: DtlsParameters;
-  }) {
-    try {
-      const transport = this._producerTransports.get(userId);
-
-      if (!transport) {
-        throw new Error(`Producer WebRTC transport not found for user ${userId}`);
-      }
-
-      await transport.connect({ dtlsParameters });
-    } catch (error) {
-      console.error("Error connecting producer WebRTC transport:", error);
-      throw error;
-    }
+/**
+ * Connect a given producer WebRTC transport using the provided DTLS parameters.
+ * Does NOT look up or manage transports — the transport instance must be provided by the caller.
+ */
+export async function connectClientProducerTransport(opts: {
+  transport: WebRtcTransport;
+  dtlsParameters: DtlsParameters;
+}) {
+  const { transport, dtlsParameters } = opts;
+  try {
+    if (!transport) throw new Error("Producer transport instance is required");
+    await transport.connect({ dtlsParameters });
+  } catch (error) {
+    const appError = new AppError("Error connecting producer WebRTC transport", {
+      code: "PRODUCER_TRANSPORT_CONNECT_FAILED",
+      cause: error,
+    });
+    logger.error(appError.message, { error: appError });
+    throw appError;
   }
+}
 
-  async createClientConsumerTransport(router: Router, userId: string) {
-    try {
-      const transport = await router.createWebRtcTransport(
-        config.mediasoup.webRtcTransport,
-      );
-
-      const transportParams = {
-        id: transport.id,
-        iceParameters: transport.iceParameters,
-        iceCandidates: transport.iceCandidates,
-        dtlsParameters: transport.dtlsParameters,
-      };
-
-      this._consumerTransports.set(userId, transport);
-
-      return transportParams;
-    } catch (error) {
-      console.error("Failed to create consumer WebRTC transport", error);
-      throw error;
-    }
+/**
+ * Create a consumer WebRTC transport. Returns the transport instance + params.
+ * NO state is stored internally.
+ */
+export async function createClientConsumerTransport(router: Router) {
+  try {
+    const transport = await router.createWebRtcTransport(config.mediasoup.webRtcTransport);
+    return { transport, transportParams: getTransportParams(transport) };
+  } catch (error) {
+    const appError = new AppError("Failed to create consumer WebRTC transport", {
+      code: "CONSUMER_TRANSPORT_CREATE_FAILED",
+      cause: error,
+    });
+    logger.error(appError.message, { error: appError });
+    throw appError;
   }
+}
 
-  async connectClientConsumerTransport({
-    userId,
-    dtlsParameters,
-  }: {
-    userId: string;
-    dtlsParameters: DtlsParameters;
-  }) {
-    try {
-      const transport = this._consumerTransports.get(userId);
-
-      if (!transport) {
-        throw new Error(`Consumer WebRTC transport not found for user ${userId}`);
-      }
-
-      await transport.connect({ dtlsParameters });
-    } catch (error) {
-      console.error("Error connecting consumer WebRTC transport:", error);
-      throw error;
-    }
+/**
+ * Connect a given consumer WebRTC transport using the provided DTLS parameters.
+ * Does NOT look up or manage transports — the transport instance must be provided by the caller.
+ */
+export async function connectClientConsumerTransport(opts: {
+  transport: WebRtcTransport;
+  dtlsParameters: DtlsParameters;
+}) {
+  const { transport, dtlsParameters } = opts;
+  try {
+    if (!transport) throw new Error("Consumer transport instance is required");
+    await transport.connect({ dtlsParameters });
+  } catch (error) {
+    const appError = new AppError("Error connecting consumer WebRTC transport", {
+      code: "CONSUMER_TRANSPORT_CONNECT_FAILED",
+      cause: error,
+    });
+    logger.error(appError.message, { error: appError });
+    throw appError;
   }
+}
 
-  async createAgentTransport(router: Router) {
-    try {
-      const directTransport = await router.createDirectTransport();
-      this._agentTransport = directTransport;
-      return directTransport;
-    } catch (error) {
-      console.error("Failed to create Direct Transport", error);
-      throw error;
-    }
+/**
+ * Create a DirectTransport for an agent. Returns the DirectTransport instance.
+ * Caller manages lifecycle.
+ */
+export async function createAgentTransport(router: Router) {
+  try {
+    const directTransport = await router.createDirectTransport();
+    return directTransport;
+  } catch (error) {
+    const appError = new AppError("Failed to create Direct Transport", {
+      code: "DIRECT_TRANSPORT_CREATE_FAILED",
+      cause: error,
+    });
+    logger.error(appError.message, { error: appError });
+    throw appError;
   }
+}
 
-  /**
-   * Close transports for a specific user or all users if no userId provided.
-   */
-  closeTransport(userId?: string) {
-    if (userId) {
-      this._producerTransports.get(userId)?.close();
-      this._consumerTransports.get(userId)?.close();
-
-      this._producerTransports.delete(userId);
-      this._consumerTransports.delete(userId);
-      return;
-    }
-
-    // Close all
-    for (const transport of this._producerTransports.values()) {
-      transport.close();
-    }
-    for (const transport of this._consumerTransports.values()) {
-      transport.close();
-    }
-
-    this._producerTransports.clear();
-    this._consumerTransports.clear();
-    // this._agentTransport?.close();
+/**
+ * Close a single transport (WebRtcTransport | DirectTransport). No-op if transport is falsy.
+ * This function *only* closes the provided transport.
+ */
+export function closeTransport(transport?: WebRtcTransport | DirectTransport | null) {
+  try {
+    if (!transport) return;
+    // mediasoup transports implement close()
+    // @ts-ignore - both WebRtcTransport and DirectTransport have close()
+    transport.close();
+  } catch (error) {
+    // Don't throw here by default; log and swallow so close can be called safely
+    logger.warn("Error while closing transport", { error });
   }
-
-  getProducerTransport(userId: string): WebRtcTransport | undefined {
-    return this._producerTransports.get(userId);
-  }
-
-  getConsumerTransport(userId: string): WebRtcTransport | undefined {
-    return this._consumerTransports.get(userId);
-  }
-
-  // get directTransport() {
-  //   return this._agentTransport;
-  // }
 }
