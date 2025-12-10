@@ -60,6 +60,7 @@ class UserManager extends EventEmitter {
   }
 
   getAll() { return Array.from(this.byUserId.values()); }
+
 }
 
 export const userManager = UserManager.getInstance();

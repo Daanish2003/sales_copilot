@@ -1,6 +1,6 @@
-// user.ts
 import type { IUser } from "@/utils/types";
 import type { Consumer, Producer, WebRtcTransport } from "mediasoup/types";
+import type { SalesCopilotAgent, STTCopilotAgent } from "../agent";
 
 export class User {
   private userId: string;
@@ -11,6 +11,8 @@ export class User {
   private consumerTransport: WebRtcTransport | null = null;
   private producerTrack: Producer | null = null;
   public consumerTracks: Map<string, Consumer> = new Map();
+  private sales_copilot_agent: SalesCopilotAgent | null = null;
+  private stt_copilot_agent: STTCopilotAgent | null = null; 
   public lastSeen = Date.now();
 
   constructor(user: IUser) {
@@ -25,6 +27,9 @@ export class User {
   getSocketId() { return this.socketId; }
   getRole() { return this.role; }
   isAgent() { return this.role === "agent"; }
+  addSalesCopilotAgent(agent: SalesCopilotAgent) {
+    this.sales_copilot_agent = agent;
+  }
 
   setSocketId(socketId: string) {
     this.socketId = socketId;
@@ -41,14 +46,44 @@ export class User {
 
   addConsumerTrack(consumer: Consumer) { this.consumerTracks.set(consumer.id, consumer); }
   getConsumerTrack(consumerId: string) { return this.consumerTracks.get(consumerId); }
+  removeConsumerTrack(consumerId: string) {
+    const c = this.consumerTracks.get(consumerId);
+    if (c) {
+      try { c.close?.(); } catch { /* ignore */ }
+      this.consumerTracks.delete(consumerId);
+    }
+  }
 
   async destroy() {
-    try { this.producerTrack?.close?.(); } catch {}
-    try { this.producerTransport?.close?.(); } catch {}
-    try { this.consumerTransport?.close?.(); } catch {}
-    for (const c of this.consumerTracks.values()) {
-      try { c.close?.(); } catch {}
+    // Close producer track
+    try {
+      if (this.producerTrack) {
+        this.producerTrack.close?.();
+      }
+    } catch (err) { /* ignore */ }
+    this.producerTrack = null;
+
+    // Close producer transport
+    try {
+      if (this.producerTransport) {
+        this.producerTransport.close?.();
+      }
+    } catch (err) { /* ignore */ }
+    this.producerTransport = null;
+
+    // Close consumer transport
+    try {
+      if (this.consumerTransport) {
+        this.consumerTransport.close?.();
+      }
+    } catch (err) { /* ignore */ }
+    this.consumerTransport = null;
+
+    // Close and clear client consumer tracks
+    for (const consumer of this.consumerTracks.values()) {
+      try { consumer.close?.(); } catch { /* ignore */ }
     }
     this.consumerTracks.clear();
+    // Close and clear agent consumer tracks
   }
 }

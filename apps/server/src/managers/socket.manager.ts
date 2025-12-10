@@ -5,9 +5,10 @@ import { roomManager } from "./room.manager";
 import type { CreateConsumerTransportResponse, CreateProducerTransportResponse, JoinRoomPayload, JoinRoomResponse } from "@/utils/types";
 import { toAppError } from "@/utils/errors";
 import { isProd } from "@/utils/prod";
-import { connectClientProducerTransport, createClientProducerTransport } from "@/modules/media/media-transport";
+import { connectClientProducerTransport, createAgentTransport, createClientProducerTransport } from "@/modules/media/media-transport";
 import { userManager } from "./user.manager";
-import { createClientConsumerTrack, createClientProducerTrack, unpauseConsumer } from "@/modules/media/media-track";
+import { createAgentConsumerTrack, createAgentProducerTrack, createClientConsumerTrack, createClientProducerTrack, unpauseConsumer } from "@/modules/media/media-track";
+import { SalesCopilotAgent, STTCopilotAgent } from "@/modules/agent";
 
 export class SocketManager {
   private static instance: SocketManager;
@@ -453,6 +454,26 @@ export class SocketManager {
 
       user.setProducerTrack(producerTrack.producer)
 
+      // const agentTransport = await createAgentTransport(room.router);
+      // const consumerAgentTrack = await createAgentConsumerTrack({
+      //   transport: agentTransport,
+      //   rtpCapabilities: room.router.rtpCapabilities,
+      //   producerId: producerTrack.producerId,
+      // })
+
+      // if(socket.user.role === "agent") {
+      //   const agent = new STTCopilotAgent(socket.user.userId);
+      //   agent.setConsumerTransport(agentTransport);
+      //   agent.addConsumerTrack(socket.user.userId, consumerAgentTrack);
+      // }
+
+      // if(socket.user.role === "user") {
+      //   const agent = new SalesCopilotAgent(socket.user.userId);
+      //   agent.setConsumerTransport(agentTransport);
+      //   agent.addConsumerTrack(socket.user.userId, consumerAgentTrack);
+      // }
+      
+      
       callback({ id: producerTrack.producerId });
     } catch (error) {
       const appError = toAppError(error, "Failed to start produce", {
@@ -599,8 +620,6 @@ export class SocketManager {
     logger.error(appError.message, { socketId: socket.id, userId: socket.user?.userId, error: appError });
   }
 }
-
-// Replace your onExitRoom method with this:
 
 private async onExitRoom(socket: Socket, { roomId }: { roomId: string }) {
   try {
